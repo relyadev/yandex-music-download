@@ -20,7 +20,8 @@ from mutagen.id3 import ID3, TPE1, TIT2, APIC
 # === КОНФИГУРАЦИЯ ===
 invoices = {}
 try:
-    from tokens import BOT_TOKEN, YM_TOKEN
+    BOT_TOKEN = os.getenv("BOT_TOKEN")
+    YM_TOKEN = os.getenv("YM_TOKEN")
 except ImportError:
     raise SystemExit(1)
 

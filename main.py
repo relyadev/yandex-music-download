@@ -27,7 +27,7 @@ except ImportError:
 
 # Параметры подписки и БД
 SUBSCRIPTIONS_DB = "subscriptions.db"
-SUBSCRIBE_PRICE_STARS = 1
+SUBSCRIBE_PRICE_STARS = 50
 SUBSCRIBE_DURATION_DAYS = 30
 
 # === ИНИЦИАЛИЗАЦИЯ ===

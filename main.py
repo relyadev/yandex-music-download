@@ -7,6 +7,7 @@ import sqlite3
 import math
 from typing import Dict, Any
 
+import io
 import aiohttp
 from aiogram import Bot, Dispatcher
 from aiogram.filters import Command
@@ -16,6 +17,7 @@ from aiogram.types import (
 )
 from yandex_music import ClientAsync
 from mutagen.id3 import ID3, TPE1, TIT2, APIC
+from PIL import Image
 
 # === КОНФИГУРАЦИЯ ===
 invoices = {}
@@ -44,14 +46,18 @@ MAX_CONCURRENT_DOWNLOADS = 10
 
 
 def init_db():
-    """Создаёт БД и таблицу подписок, если их нет."""
     conn = sqlite3.connect(SUBSCRIPTIONS_DB)
     try:
         c = conn.cursor()
         c.execute(
-            """CREATE TABLE IF NOT EXISTS subscriptions (
-                   user_id INTEGER PRIMARY KEY,
-                   expires_at INTEGER
+            """CREATE TABLE IF NOT EXISTS subscriptions
+               (
+                   user_id
+                   INTEGER
+                   PRIMARY
+                   KEY,
+                   expires_at
+                   INTEGER
                )"""
         )
         conn.commit()
@@ -60,9 +66,6 @@ def init_db():
 
 
 def add_subscription(user_id: int, days: int = SUBSCRIBE_DURATION_DAYS) -> None:
-    """Добавляет подписку: если подписка уже есть и ещё не истекла — продлевает её на days.
-    Иначе создаёт новую подписку на days от текущего момента.
-    """
     now = int(time.time())
     conn = sqlite3.connect(SUBSCRIPTIONS_DB)
     try:
@@ -77,16 +80,14 @@ def add_subscription(user_id: int, days: int = SUBSCRIBE_DURATION_DAYS) -> None:
         else:
             # новая подписка от текущего момента
             new_expires = now + days * 86400
-            c.execute("INSERT OR REPLACE INTO subscriptions (user_id, expires_at) VALUES (?, ?)", (user_id, new_expires))
+            c.execute("INSERT OR REPLACE INTO subscriptions (user_id, expires_at) VALUES (?, ?)",
+                      (user_id, new_expires))
         conn.commit()
     finally:
         conn.close()
 
 
 def get_subscription_days_left(user_id: int) -> int:
-    """Возвращает количество оставшихся дней подписки (целое, округление вверх).
-    Если подписки нет или она просрочена — возвращает 0.
-    """
     conn = sqlite3.connect(SUBSCRIPTIONS_DB)
     try:
         c = conn.cursor()
@@ -167,17 +168,44 @@ async def download_file_aio(url: str, filename: str, chat_id: int, progress_msg_
                                 elapsed = current_time - start_time
                                 speed = (downloaded / (1024 * 1024)) / elapsed if elapsed > 0 else 0
                                 progress_text = (
-                                    f"Загрузка... {progress}%"
-                                    f"Скачано: {downloaded / (1024 * 1024):.2f}MB / {(total_size / (1024 * 1024)) if total_size > 0 else 0:.2f}MB"
+                                    f"Загрузка... {progress}%\n"
+                                    f"Скачано: {downloaded / (1024 * 1024):.2f}MB / {(total_size / (1024 * 1024)) if total_size > 0 else 0:.2f}MB\n"
                                     f"Скорость: {speed:.2f} MB/s"
                                 )
                                 await edit_progress_message(chat_id, progress_msg_id, progress_text)
     except:
-        pass
+        await edit_progress_message(chat_id, progress_msg_id, f"Ошибка при загрузке файла")
+
+
+# === Новая функция: сохранение превью для Telegram ===
+def save_jpeg_thumb(cover_data: bytes) -> str:
+    fd, path = tempfile.mkstemp(suffix=".jpg", prefix="thumb_")
+    os.close(fd)
+    try:
+        img = Image.open(io.BytesIO(cover_data))
+        img = img.convert("RGB")
+        img.thumbnail((320, 320), Image.LANCZOS)
+
+        for quality in (95, 85, 75, 65, 50):
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=quality, optimize=True)
+            size = buf.tell()
+            if size <= 200 * 1024 or quality == 50:
+                with open(path, "wb") as f:
+                    f.write(buf.getvalue())
+                return path
+    except:
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except:
+            pass
+        raise
 
 
 async def download_and_send_track(chat_id: int, track_id: int, progress_msg_id: int) -> None:
     temp_file = None
+    temp_thumb = None
     try:
         track_info = (await ym_client.tracks(track_id))[0]
         artists = ", ".join(artist.name for artist in track_info.artists)
@@ -192,6 +220,11 @@ async def download_and_send_track(chat_id: int, track_id: int, progress_msg_id: 
                 resp.raise_for_status()
                 cover_data = await resp.read()
 
+        try:
+            temp_thumb = save_jpeg_thumb(cover_data)
+        except:
+            temp_thumb = None
+
         if hasattr(track_info, 'get_download_info_async'):
             download_info = await track_info.get_download_info_async(get_direct_links=True)
         else:
@@ -199,7 +232,13 @@ async def download_and_send_track(chat_id: int, track_id: int, progress_msg_id: 
 
         if not download_info:
             pass
-        direct_link = download_info[0].direct_link
+        mp3_infos = [di for di in download_info if di.codec == 'mp3' and di.direct_link]
+        if not mp3_infos:
+            await edit_progress_message(chat_id, progress_msg_id, "MP3 формат недоступен для этого трека. Попробуйте другой трек.")
+            return
+
+        mp3_infos.sort(key=lambda x: x.bitrate_in_kbps, reverse=True)
+        direct_link = mp3_infos[0].direct_link
 
         fd, temp_path = tempfile.mkstemp(suffix=".mp3", prefix=f"ym_{chat_id}_")
         os.close(fd)
@@ -207,25 +246,54 @@ async def download_and_send_track(chat_id: int, track_id: int, progress_msg_id: 
 
         await download_file_aio(direct_link, temp_path, chat_id, progress_msg_id)
 
+        file_size = os.path.getsize(temp_path)
+        if file_size > 50 * 1024 * 1024:
+            await edit_progress_message(chat_id, progress_msg_id, "Файл слишком большой для отправки как аудио (>50MB).")
+            return
+
         await add_tags_to_audio(temp_path, title, artists, cover_data)
 
         await edit_progress_message(chat_id, progress_msg_id, "Отправка трека...")
 
-        sent_audio = await bot.send_audio(chat_id=chat_id, audio=FSInputFile(temp_path), title=title, performer=artists)
+        try:
+            if temp_thumb:
+                sent_audio = await bot.send_audio(
+                    chat_id=chat_id,
+                    audio=FSInputFile(temp_path),
+                    title=title,
+                    performer=artists,
+                    thumbnail=FSInputFile(temp_thumb)
+                )
+            else:
+                sent_audio = await bot.send_audio(
+                    chat_id=chat_id,
+                    audio=FSInputFile(temp_path),
+                    title=title,
+                    performer=artists
+                )
 
-        await add_action_buttons(chat_id, sent_audio.message_id, title)
+            await add_action_buttons(chat_id, sent_audio.message_id, title)
+        except:
+            await edit_progress_message(chat_id, progress_msg_id, f"Ошибка при отправке трека")
+            return
+
         try:
             await bot.delete_message(chat_id, progress_msg_id)
-        except Exception:
+        except:
             pass
 
     except:
-        pass
+        await edit_progress_message(chat_id, progress_msg_id, f"Общая ошибка")
     finally:
         if temp_file and os.path.exists(temp_file):
             try:
                 os.remove(temp_file)
-            except Exception:
+            except:
+                pass
+        if temp_thumb and os.path.exists(temp_thumb):
+            try:
+                os.remove(temp_thumb)
+            except:
                 pass
 
 
@@ -250,6 +318,7 @@ async def send_welcome(message: Message):
         parse_mode="Markdown"
     )
 
+
 # === Команда статуса ===
 @dp.message(Command("status"))
 async def status_handler(message: Message):
@@ -264,8 +333,8 @@ async def subscribe_handler(message: Message):
     chat_id = message.chat.id
     days_left = get_subscription_days_left(chat_id)
     if days_left > 0:
-        # Если подписка уже есть — разрешаем оплату и информируем пользователя
-        await message.answer(f"У вас уже есть подписка.\n\nОсталось: {days_left} дней.\n\nПосле оплаты к текущей подписке добавится ещё {SUBSCRIBE_DURATION_DAYS} дней.")
+        await message.answer(
+            f"У вас уже есть подписка.\n\nОсталось: {days_left} дней.\n\nПосле оплаты к текущей подписке добавится ещё {SUBSCRIBE_DURATION_DAYS} дней.")
 
     try:
         amount = SUBSCRIBE_PRICE_STARS
@@ -284,7 +353,7 @@ async def subscribe_handler(message: Message):
 
         invoices[chat_id] = invoice_msg.message_id
 
-    except Exception as e:
+    except:
         await message.answer("Не удалось создать счёт для оплаты. Пожалуйста, попробуйте позже.")
 
 
@@ -361,7 +430,7 @@ async def download_callback_handler(callback: CallbackQuery):
 
         try:
             await bot.delete_message(chat_id, callback.message.message_id)
-        except Exception:
+        except:
             pass
 
         progress_msg = await bot.send_message(chat_id, "Ваш запрос добавлен в очередь...")
@@ -385,8 +454,6 @@ async def delete_track_handler(callback: CallbackQuery):
         await callback.answer("Трек удалён.")
     except:
         await callback.answer("Не удалось удалить трек (возможно, он уже удалён).")
-
-
 
 
 # === ЗАПУСК БОТА ===

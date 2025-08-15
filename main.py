@@ -125,8 +125,7 @@ async def edit_progress_message(chat_id: int, message_id: int, text: str) -> Non
 
 async def add_action_buttons(chat_id: int, message_id: int, title: str) -> None:
     markup = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Поделиться", url=f"https://t.me/share/url?url={title}&text=Слушай: {title}"),
-         InlineKeyboardButton(text="Удалить", callback_data=f"delete_{message_id}")]
+         [InlineKeyboardButton(text="Удалить", callback_data=f"delete_{message_id}")]
     ])
     try:
         await bot.edit_message_reply_markup(chat_id=chat_id, message_id=message_id, reply_markup=markup)

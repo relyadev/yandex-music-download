@@ -38,6 +38,9 @@ dp = Dispatcher()
 
 ym_client = None
 
+# Добавлено: сохранение id бота для проверки reply_to_message
+BOT_ID: int | None = None
+
 user_states: Dict[int, Dict[str, Any]] = {}
 
 # === УПРАВЛЕНИЕ ЗАГРУЗКАМИ И ПОДПИСЧИКАМИ ===
@@ -450,7 +453,7 @@ async def search_command_handler(message: Message):
 @dp.message()
 async def search_track_handler(message: Message):
     """
-    Теперь этот хендлер принимает ПОЛЬНЫЕ текстовые сообщения ТОЛЬКО в приватных чатах.
+    Теперь этот хендлер принимает ПОЛНЫЕ текстовые сообщения ТОЛЬКО в приватных чатах.
     В группах обычные сообщения игнорируются (и предлагается использовать /search).
     Также предотвращаем обработку сообщений, начинающихся с '/' (команды).
     """
@@ -461,6 +464,16 @@ async def search_track_handler(message: Message):
     # Разрешаем "просто название" только в приватных чатах
     # message.chat.type может быть 'private', 'group', 'supergroup', 'channel'
     if message.chat.type != "private":
+        # НЕ реагируем на сообщения от ботов
+        if getattr(message.from_user, "is_bot", False):
+            return
+
+        # НЕ реагируем, если это ответ на сообщение бота (fix)
+        reply = getattr(message, "reply_to_message", None)
+        if reply and getattr(reply, "from_user", None) and getattr(reply.from_user, "id", None) == BOT_ID:
+            return
+
+        # По умолчанию — подсказка использовать /search в публичных чатах
         await message.answer("В публичных чатах используйте команду /search название.")
         return
 
@@ -511,10 +524,13 @@ async def delete_track_handler(callback: CallbackQuery):
 
 # === ЗАПУСК БОТА ===
 async def main():
-    global ym_client
+    global ym_client, BOT_ID
     init_db()
     ym_client = ClientAsync(YM_TOKEN)
     await ym_client.init()
+    # Инициализируем информацию о боте (чтобы знать его id и не отвечать на собственные сообщения)
+    me = await bot.get_me()
+    BOT_ID = me.id
     print("Running!")
     for _ in range(MAX_CONCURRENT_DOWNLOADS):
         asyncio.create_task(download_worker())

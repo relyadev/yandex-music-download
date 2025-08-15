@@ -382,18 +382,24 @@ async def successful_payment_handler(message: Message):
             "Оплата прошла, но не удалось активировать подписку из-за технической ошибки. Пожалуйста, обратитесь в поддержку")
 
 
-# === ОСНОВНОЙ ФУНКЦИОНАЛ ПОИСКА И ЗАГРУЗКИ ===
-@dp.message()
-async def search_track_handler(message: Message):
+# === ОСНОВНЫЕ ФУНКЦИИ ПОИСКА (вынесены для переиспользования) ===
+async def perform_search_and_show(message: Message, query: str):
+    """
+    Вынесенная логика поиска/показа результатов.
+    Используется и для приватных сообщений (plain text), и для /search в группах.
+    """
     chat_id = message.chat.id
+
     try:
+        # удаляем старое сообщение с выбором, если было
         if chat_id in user_states and "select_msg" in user_states[chat_id]:
             try:
                 await bot.delete_message(chat_id, user_states[chat_id]["select_msg"].message_id)
             except:
                 pass
 
-        search_result = await ym_client.search(message.text, type_="track")
+        # используем query вместо message.text
+        search_result = await ym_client.search(query, type_="track")
 
         if not getattr(search_result, 'tracks', None) or not getattr(search_result.tracks, 'results', None):
             await message.answer("Ничего не найдено. Попробуйте изменить запрос.")
@@ -417,6 +423,54 @@ async def search_track_handler(message: Message):
 
     except:
         await message.answer("Произошла ошибка при поиске. Попробуйте позже.")
+
+
+# --- Новый обработчик команды /search (для групп и приватных) ---
+@dp.message(Command("search"))
+async def search_command_handler(message: Message):
+    """
+    Обработчик /search название
+    В группах обязателен, в приватных можно использовать тоже.
+    """
+    # Получаем аргументы команды
+    query = ""
+    if message.text:
+        parts = message.text.split(maxsplit=1)
+        if len(parts) > 1:
+            query = parts[1].strip()
+
+    if not query:
+        await message.answer("Использование: /search название песни (например: /search Rammstein - Deutschland)")
+        return
+
+    await perform_search_and_show(message, query)
+
+
+# --- Изменённый универсальный обработчик сообщений ---
+@dp.message()
+async def search_track_handler(message: Message):
+    """
+    Теперь этот хендлер принимает ПОЛЬНЫЕ текстовые сообщения ТОЛЬКО в приватных чатах.
+    В группах обычные сообщения игнорируются (и предлагается использовать /search).
+    Также предотвращаем обработку сообщений, начинающихся с '/' (команды).
+    """
+    # Если это команда — пропускаем (команды обрабатываются командным хендлером выше)
+    if message.text and message.text.startswith("/"):
+        return
+
+    # Разрешаем "просто название" только в приватных чатах
+    # message.chat.type может быть 'private', 'group', 'supergroup', 'channel'
+    if message.chat.type != "private":
+        await message.answer("В публичных чатах используйте команду /search название.")
+        return
+
+    # В приватных — используем присланный текст как запрос
+    query = message.text.strip() if message.text else ""
+    if not query:
+        await message.answer("Отправьте название трека (например: Rammstein - Deutschland) или используйте /search.")
+        return
+
+    await perform_search_and_show(message, query)
 
 
 @dp.callback_query(lambda c: c.data and c.data.startswith("download_"))

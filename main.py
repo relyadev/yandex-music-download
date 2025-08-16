@@ -20,7 +20,7 @@ from mutagen.id3 import ID3, TPE1, TIT2, APIC
 from PIL import Image
 
 # === КОНФИГУРАЦИЯ ===
-invoices = {}
+invoices = {}   
 try:
     BOT_TOKEN = os.getenv("BOT_TOKEN")
     YM_TOKEN = os.getenv("YM_TOKEN")
@@ -314,9 +314,10 @@ async def download_worker():
 @dp.message(Command("start"))
 async def send_welcome(message: Message):
     await message.answer(
-        "Отправьте мне название песни, и я найду этот трек!\n\n"
+        "Отправьте мне название песни или строчку из неё, и я найду этот трек!\n\n"
         "Пример: `Rammstein - Deutschland`\n\n"
-        "/subscribe - оформить подписку для приоритетной загрузки",
+        "/subscribe - оформить подписку для приоритетной загрузки\n\n",
+        "Добавьте меня в чат и ищите песни вместе с друзьями с помощью команды /search __название__",
         parse_mode="Markdown"
     )
 

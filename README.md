@@ -7,4 +7,4 @@ pip install -r requirements.txt
 python main.py
 ```
 
-Or `t.me.YandexUBot`
+Or `t.me.YandexUBot`(down, only self-host)
